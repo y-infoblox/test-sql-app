@@ -1,0 +1,10 @@
+name: SQL Analysis
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+jobs:
+  analyze:
+    uses: y-infoblox/sql-optimizer-agent/.github/workflows/sql-pr-analysis.yml@main
+    with:
+      migrations_path: db/migrations
