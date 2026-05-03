@@ -152,10 +152,12 @@ jobs:
       # ── 5. Install sql-optimizer-agent ──
       - name: Install sql-optimizer-agent
         if: steps.detect.outputs.has_gorm == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.MY_GITHUB_TOKEN }}
         run: |
           # Clone the agent repo
           git clone --depth 1 --branch ${{ inputs.agent_ref }} \
-            https://github.com/${{ inputs.agent_repo }}.git /tmp/sql-optimizer-agent
+            https://x-access-token:${GH_TOKEN}@github.com/${{ inputs.agent_repo }}.git /tmp/sql-optimizer-agent
 
           # Install Python dependencies
           cd /tmp/sql-optimizer-agent
