@@ -13,3 +13,9 @@ func GetUsers(db *gorm.DB, name string) ([]User, error) {
 	db.Where("name = ?", name).Find(&users)
 	return users, nil
 }
+
+func GetAllOrders(db *gorm.DB) ([]Order, error) {
+    var orders []Order
+    db.Find(&orders)
+    return orders, nil
+}
