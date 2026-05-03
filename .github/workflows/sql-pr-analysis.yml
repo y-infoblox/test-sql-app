@@ -1,0 +1,209 @@
+# =============================================================================
+# SQL Optimizer Agent — PR Analysis Workflow
+#
+# Reusable workflow that analyzes GORM/SQL queries in pull requests.
+# App repos call this workflow to get automatic PR comments with SQL analysis.
+#
+# Usage in your app repo (e.g. athena-identity-service):
+#
+#   # .github/workflows/sql-analysis.yml
+#   name: SQL Analysis
+#   on:
+#     pull_request:
+#       types: [opened, synchronize]
+#
+#   jobs:
+#     analyze:
+#       uses: <org>/sql-optimizer-agent/.github/workflows/sql-pr-analysis.yml@main
+#       with:
+#         migrations_path: db/migrations
+#       secrets:
+#         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+#
+# =============================================================================
+
+name: SQL PR Analysis
+
+on:
+  workflow_call:
+    inputs:
+      migrations_path:
+        description: "Path to migration files (relative to app repo root)"
+        required: false
+        type: string
+        default: "db/migrations"
+      python_version:
+        description: "Python version to use"
+        required: false
+        type: string
+        default: "3.12"
+      go_version:
+        description: "Go version to use"
+        required: false
+        type: string
+        default: "1.22"
+      agent_repo:
+        description: "sql-optimizer-agent repo (org/repo)"
+        required: false
+        type: string
+        default: "Infoblox-CTO/sql-optimizer-agent"
+      agent_ref:
+        description: "Branch/tag of sql-optimizer-agent to use"
+        required: false
+        type: string
+        default: "main"
+
+jobs:
+  sql-analysis:
+    name: Analyze SQL in PR
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: agent
+          POSTGRES_PASSWORD: agent
+          POSTGRES_DB: testdb
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U agent -d testdb"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=10
+
+    steps:
+      # ── 1. Checkout the app repo (the PR source) ──
+      - name: Checkout app repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # full history for diff
+
+      # ── 2. Detect changed Go files with GORM/SQL ──
+      - name: Detect GORM files in PR
+        id: detect
+        run: |
+          # Get list of changed .go files in the PR
+          CHANGED_GO_FILES=$(git diff --name-only --diff-filter=ACMR \
+            ${{ github.event.pull_request.base.sha }}...${{ github.sha }} \
+            -- '*.go' || true)
+
+          if [ -z "$CHANGED_GO_FILES" ]; then
+            echo "No Go files changed in this PR."
+            echo "has_gorm=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Filter to files containing GORM indicators
+          GORM_FILES=""
+          for f in $CHANGED_GO_FILES; do
+            if [ -f "$f" ] && grep -qE 'gorm\.io|"gorm"|\.Where\(|\.Find\(|\.First\(|\.Raw\(|\.Create\(|\.Save\(|\.Delete\(|\.Update\(|\.Scan\(|\.Table\(' "$f" 2>/dev/null; then
+              GORM_FILES="$GORM_FILES $f"
+            fi
+          done
+
+          GORM_FILES=$(echo "$GORM_FILES" | xargs)  # trim whitespace
+
+          if [ -z "$GORM_FILES" ]; then
+            echo "Changed Go files have no GORM/SQL queries."
+            echo "has_gorm=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "Found GORM files: $GORM_FILES"
+          echo "has_gorm=true" >> "$GITHUB_OUTPUT"
+          echo "gorm_files=$GORM_FILES" >> "$GITHUB_OUTPUT"
+
+      # ── 3. Run migrations ──
+      - name: Run database migrations
+        if: steps.detect.outputs.has_gorm == 'true'
+        run: |
+          MIGRATIONS_DIR="${{ inputs.migrations_path }}"
+          if [ ! -d "$MIGRATIONS_DIR" ]; then
+            echo "::warning::Migrations directory not found: $MIGRATIONS_DIR — skipping migrations"
+            exit 0
+          fi
+
+          # Install golang-migrate
+          curl -L https://github.com/golang-migrate/migrate/releases/download/v4.17.0/migrate.linux-amd64.tar.gz | tar xz
+          sudo mv migrate /usr/local/bin/migrate
+
+          # Run all up migrations
+          migrate -path "$MIGRATIONS_DIR" \
+            -database "postgresql://agent:agent@localhost:5432/testdb?sslmode=disable" \
+            up
+
+          echo "Migrations applied successfully."
+
+      # ── 4. Setup Python + Go ──
+      - name: Setup Python
+        if: steps.detect.outputs.has_gorm == 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ inputs.python_version }}
+
+      - name: Setup Go
+        if: steps.detect.outputs.has_gorm == 'true'
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ inputs.go_version }}
+
+      # ── 5. Install sql-optimizer-agent ──
+      - name: Install sql-optimizer-agent
+        if: steps.detect.outputs.has_gorm == 'true'
+        run: |
+          # Clone the agent repo
+          git clone --depth 1 --branch ${{ inputs.agent_ref }} \
+            https://github.com/${{ inputs.agent_repo }}.git /tmp/sql-optimizer-agent
+
+          # Install Python dependencies
+          cd /tmp/sql-optimizer-agent
+          pip install -e .
+
+          # Build the Go binary
+          cd gorm-parser
+          go build -o ../bin/gorm-parser .
+          echo "sql-optimizer-agent installed successfully."
+
+      # ── 6. Run analysis on changed files ──
+      - name: Analyze GORM queries
+        if: steps.detect.outputs.has_gorm == 'true'
+        id: analyze
+        env:
+          DB_HOST: localhost
+          DB_PORT: "5432"
+          DB_NAME: testdb
+          DB_USER: agent
+          DB_PASSWORD: agent
+        run: |
+          cd /tmp/sql-optimizer-agent
+
+          # Build the --go-files arguments
+          GO_FILES_ARGS=""
+          for f in ${{ steps.detect.outputs.gorm_files }}; do
+            GO_FILES_ARGS="$GO_FILES_ARGS --go-files ${{ github.workspace }}/$f"
+          done
+
+          # Run analysis, capture markdown output
+          REPORT=$(python -m src.cli.main analyze $GO_FILES_ARGS --format markdown 2>/dev/null || true)
+
+          if [ -z "$REPORT" ]; then
+            echo "No analyzable queries found."
+            echo "has_report=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "has_report=true" >> "$GITHUB_OUTPUT"
+
+          # Save report to file (handles multi-line safely)
+          echo "$REPORT" > /tmp/sql-report.md
+
+      # ── 7. Post PR comment ──
+      - name: Post analysis comment
+        if: steps.detect.outputs.has_gorm == 'true' && steps.analyze.outputs.has_report == 'true'
+        uses: peter-evans/create-or-update-comment@v4
+        with:
+          issue-number: ${{ github.event.pull_request.number }}
+          body-path: /tmp/sql-report.md
+          comment-tag: sql-optimizer-agent
