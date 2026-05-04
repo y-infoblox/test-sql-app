@@ -5,7 +5,7 @@ on:
 
 jobs:
   analyze:
-    uses: y-infoblox/sql-optimizer-agent/.github/workflows/sql-pr-analysis.yml@st_setup
+    uses: ./.github/workflows/sql-pr-analysis.yml
     with:
       migrations_path: db/migrations
     secrets:
