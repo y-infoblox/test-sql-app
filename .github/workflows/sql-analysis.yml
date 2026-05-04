@@ -8,3 +8,5 @@ jobs:
     uses: ./.github/workflows/sql-pr-analysis.yml
     with:
       migrations_path: db/migrations
+    secrets:
+      MY_GITHUB_TOKEN: ${{ secrets.MY_GITHUB_TOKEN }}
