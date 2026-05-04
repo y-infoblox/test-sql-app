@@ -57,6 +57,10 @@ on:
         description: "GitHub token to clone private sql-optimizer-agent repo"
         required: true
 
+permissions:
+  pull-requests: write
+  issues: write
+
 jobs:
   sql-analysis:
     name: Analyze SQL in PR
@@ -217,4 +221,3 @@ jobs:
         with:
           issue-number: ${{ github.event.pull_request.number }}
           body-path: /tmp/sql-report.md
-          comment-tag: sql-optimizer-agent
