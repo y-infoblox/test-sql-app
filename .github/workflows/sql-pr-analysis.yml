@@ -46,12 +46,12 @@ on:
         description: "sql-optimizer-agent repo (org/repo)"
         required: false
         type: string
-        default: "Infoblox-CTO/sql-optimizer-agent"
+        default: "y-infoblox/sql-optimizer-agent"
       agent_ref:
         description: "Branch/tag of sql-optimizer-agent to use"
         required: false
         type: string
-        default: "main"
+        default: "st_setup"
     secrets:
       MY_GITHUB_TOKEN:
         description: "GitHub token to clone private sql-optimizer-agent repo"
@@ -191,19 +191,24 @@ jobs:
             GO_FILES_ARGS="$GO_FILES_ARGS --go-files ${{ github.workspace }}/$f"
           done
 
-          # Run analysis, capture markdown output
-          REPORT=$(python -m src.cli.main analyze $GO_FILES_ARGS --format markdown 2>/dev/null || true)
+          echo "Running: python -m src.cli.main analyze $GO_FILES_ARGS --format markdown"
 
-          if [ -z "$REPORT" ]; then
-            echo "No analyzable queries found."
+          # Run analysis — stdout (markdown report) goes to file, stderr shows in the log
+          python -m src.cli.main analyze $GO_FILES_ARGS --format markdown \
+            > /tmp/sql-report.md || true
+
+          # Check if we got a valid markdown report (starts with #)
+          if [ ! -s /tmp/sql-report.md ] || ! grep -q '^# ' /tmp/sql-report.md; then
+            echo "--- analyzer output ---"
+            cat /tmp/sql-report.md 2>/dev/null || true
+            echo "--- end output ---"
+            echo "No analyzable queries or analysis failed (see output above)."
             echo "has_report=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
           echo "has_report=true" >> "$GITHUB_OUTPUT"
-
-          # Save report to file (handles multi-line safely)
-          echo "$REPORT" > /tmp/sql-report.md
+          echo "Report generated ($(wc -l < /tmp/sql-report.md) lines)"
 
       # ── 7. Post PR comment ──
       - name: Post analysis comment
